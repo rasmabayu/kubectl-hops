@@ -4,7 +4,38 @@
 
 `kubectl hops` follows **Ingress → Service → EndpointSlices → Pods** (plus NetworkPolicy), runs read-only checks on every hop and points at the first one that is broken, with a plain-language *likely cause* and concrete commands to try next.
 
-> **Status: early development (milestone M1).** Tracing from `svc/<name>` works today. Ingress, Pod and NetworkPolicy checks are on the [roadmap](#roadmap).
+> **Status: early development (milestone M2 in progress).** Tracing from `ingress/<name>` and `svc/<name>` works today. Pod, `deploy/<name>` and NetworkPolicy checks are on the [roadmap](#roadmap).
+
+```text
+$ kubectl hops ingress/shop -n shop --host shop.example.com --path /api/orders --check-tls
+Tracing Ingress shop/shop
+
+✖ Ingress shop/shop  ← first broken hop
+├─ ✔ exists: 1 rule(s), 1 TLS section(s)
+├─ ✔ ingressClass: IngressClass nginx (controller k8s.io/ingress-nginx)
+├─ ✔ controller: 1/1 ingress-nginx pods ready in ingress-nginx
+├─ ✔ address: 203.0.113.10
+├─ ✔ rule: shop.example.com/api/orders matches path /api (Prefix) → svc/web:8080
+├─ ⚠ tls: certificate for shop.example.com expires in 5 day(s)
+└─ ✖ backend: Service web has no port 8080
+      service ports: http=80
+  ↓
+✔ Service shop/web
+├─ ✔ exists: ClusterIP, ports 80→http
+├─ ✔ selector: selector app=web matches 1 pod(s)
+└─ ✔ targetPort http: port 80 → targetPort http/TCP found on 1/1 pod(s)
+  ↓
+✔ EndpointSlices shop/web
+└─ ✔ endpoints: 1/1 endpoints ready
+
+Result: BROKEN at Ingress shop/shop
+Likely cause: The Ingress backend names a port the Service does not expose (Ingress backends use the Service port, not the targetPort), so the controller has no upstream and answers 503.
+Try:
+  kubectl get svc web -n shop -o jsonpath='{.spec.ports}'
+  kubectl get ingress shop -n shop -o yaml
+```
+
+Starting from a Service skips the Ingress hop:
 
 ```text
 $ kubectl hops svc/web -n shop
@@ -43,9 +74,9 @@ Plenty of plugins explain *one failing pod*. `kubectl hops` explains the *path*:
 ## Usage
 
 ```sh
+kubectl hops ingress/<name> [-n namespace] [--host h] [--path p] [--check-tls] [-o text|json]
 kubectl hops svc/<name>     [-n namespace] [-o text|json]
-kubectl hops ingress/<name> [-n namespace] [--host h --path p]   # M2
-kubectl hops deploy/<name>  [-n namespace]                       # M2
+kubectl hops deploy/<name>  [-n namespace]                       # planned
 ```
 
 All standard kubeconfig flags work (`--context`, `--kubeconfig`, `--as`, `--request-timeout`, …).
@@ -54,7 +85,10 @@ All standard kubeconfig flags work (`--context`, `--kubeconfig`, `--as`, `--requ
 |------|---------|---------|
 | `-o, --output` | `text` | `text` (tree) or `json` |
 | `--color` | `auto` | `auto` (TTY and no `NO_COLOR`), `always`, `never` |
-| `--host`, `--path` | | Select the Ingress rule to follow (ingress targets) |
+| `--host` | first rule host | Ingress host to follow; exact hosts beat `*.wildcard` hosts, which beat catch-all rules |
+| `--path` | `/` | Request path; the longest matching path wins, `Exact` beats `Prefix` |
+| `--check-tls` | off | Read the Ingress TLS secret and check expiry and SANs (only `tls.crt` is parsed) |
+| `--version` | | Print the version (`-v` is left alone; kubectl uses it for log verbosity) |
 
 ### Exit codes
 
@@ -71,17 +105,22 @@ Designed to gate CI and smoke tests after a deploy:
 
 | Hop | Check | Status |
 |-----|-------|--------|
+| **Ingress** | Ingress exists | ✅ M2 |
+| | IngressClass resolves (`spec.ingressClassName`, the deprecated annotation, or the single default class) | ✅ M2 |
+| | Controller pods run and are ready (ingress-nginx, NGINX Inc., Traefik, HAProxy, AWS LBC; managed GKE/Azure noted) | ✅ M2 |
+| | The controller has published an address in `status` | ✅ M2 |
+| | A rule matches `--host`/`--path` the way controllers pick it, else `defaultBackend`, else ✖ with the rules that exist | ✅ M2 |
+| | Backend Service exists and exposes the backend port (by name or number) | ✅ M2 |
+| | `--check-tls`: a TLS section covers the host, its secret exists, the certificate is in date (⚠ under 14 days) and its SANs cover the host | ✅ M2 |
 | **Service** | Service exists | ✅ M1 |
 | | ExternalName / headless noted | ✅ M1 |
 | | Selector is non-empty and matches running pods; on a miss, a per-label breakdown with the values that *do* exist | ✅ M1 |
-| | `targetPort` (number, name or default) matches a `containerPort` with the same protocol on the selected pods | ✅ M1 |
+| | `targetPort` (number, name or default) matches a `containerPort` or a readiness/liveness/startup probe port, with the same protocol | ✅ M2 |
 | **EndpointSlices** | Ready vs not-ready endpoints (deduplicated across dual-stack slices) | ✅ M1 |
-| **Ingress** | IngressClass exists and its controller pods run; a rule matches `--host`/`--path`; backend Service and port exist | M2 |
-| | `--check-tls`: TLS secret exists, certificate not expired, SAN covers host | M2 |
 | **Pods** | Ready, readiness-probe failures from events, CrashLoopBackOff / OOMKilled / restarts, node NotReady | M2 |
 | **NetworkPolicy** | Policies that select the target pods without an obvious rule allowing the ingress controller on that port → `⚠` | M3 |
 
-A note on `targetPort`: `containerPort` is informational, so a numeric `targetPort` only needs the process to listen. When pods declare ports and none of them match, a typo is far more likely than an undeclared listener, so `hops` reports a failure and says so in the cause. A **named** `targetPort` that no container defines is always fatal, because the endpoint controller cannot resolve it.
+A note on `targetPort`: `containerPort` is informational, so a numeric `targetPort` only needs the process to listen. A probe aimed at that port proves something listens there, so it counts as a match. When pods declare ports and neither they nor a probe match, a typo is far more likely than an undeclared listener, so `hops` reports a failure and says so in the cause. When pods declare nothing and their probes use another port, it is a warning. A **named** `targetPort` that no container defines is always fatal, because the endpoint controller cannot resolve it.
 
 ## Architecture
 
@@ -99,12 +138,12 @@ flowchart LR
 - `pkg/render` knows nothing about Kubernetes; it renders a `Report`.
 - `pkg/cmd` wires flags, the client and exit codes.
 
-The plugin needs only `get`/`list` on the objects it walks; it never writes to the cluster or sends traffic.
+The plugin needs only `get`/`list` on the objects it walks (Ingresses, IngressClasses, Services, EndpointSlices, Pods; Secrets only with `--check-tls`); it never writes to the cluster or sends traffic. Missing permissions for optional checks, such as listing controller pods cluster-wide, turn those checks into notes instead of errors.
 
 ## Roadmap
 
 - **M1** — CLI skeleton, Service and EndpointSlices checks, text/JSON renderer, table-driven unit tests. ✅
-- **M2** — Ingress (incl. `--check-tls`) and Pod checks; `deploy/<name>` resolves the Services that select it.
+- **M2** — Ingress hop incl. `--check-tls` ✅, probe-aware `targetPort` check ✅; next: Pod checks and `deploy/<name>` resolving the Services that select it.
 - **M3** — Static NetworkPolicy check; end-to-end tests on kind using `examples/broken/*.yaml` (selector mismatch, wrong targetPort, failing readiness probe, missing backend, deny-all policy), which double as the demo; vhs GIF.
 - **M4** — goreleaser multi-arch release and krew manifest.
 - **Later** — Gateway API `HTTPRoute`, `--watch`, Istio `VirtualService`.

@@ -64,6 +64,16 @@ func withPorts(ports ...corev1.ContainerPort) podOpt {
 	return func(p *corev1.Pod) { p.Spec.Containers[0].Ports = ports }
 }
 
+func withReadiness(pr *corev1.Probe) podOpt {
+	return func(p *corev1.Pod) { p.Spec.Containers[0].ReadinessProbe = pr }
+}
+
+func httpProbe(port int32) *corev1.Probe {
+	return &corev1.Probe{ProbeHandler: corev1.ProbeHandler{
+		HTTPGet: &corev1.HTTPGetAction{Path: "/healthz", Port: intstr.FromInt32(port)},
+	}}
+}
+
 func withPhase(ph corev1.PodPhase) podOpt {
 	return func(p *corev1.Pod) { p.Status.Phase = ph }
 }
@@ -255,6 +265,73 @@ func TestTraceService(t *testing.T) {
 			},
 		},
 		{
+			name: "probe port proves undeclared targetPort",
+			objects: []runtime.Object{
+				service("web", withTargetPort(intstr.FromInt32(3000))),
+				pod("web-1", webLabels, withPorts(), withReadiness(httpProbe(3000))),
+				slice("web-abc", "web", ep{"web-1", "10.0.0.1", true}),
+			},
+			wantStatus: StatusOK, wantBroken: -1, wantHops: 2, wantExit: ExitOK,
+			wantChecks: []wantCheck{
+				{"Service", "targetPort http", StatusOK, "3000/TCP found on 1/1 pod(s) (via probe port on 1)"},
+			},
+		},
+		{
+			name: "probes use another port than targetPort",
+			objects: []runtime.Object{
+				service("web", withTargetPort(intstr.FromInt32(3000))),
+				pod("web-1", webLabels, withPorts(), withReadiness(&corev1.Probe{ProbeHandler: corev1.ProbeHandler{
+					TCPSocket: &corev1.TCPSocketAction{Port: intstr.FromInt32(3001)},
+				}})),
+				slice("web-abc", "web", ep{"web-1", "10.0.0.1", true}),
+			},
+			wantStatus: StatusWarn, wantBroken: -1, wantHops: 2, wantExit: ExitWarning,
+			wantChecks: []wantCheck{
+				{"Service", "targetPort http", StatusWarn, "probes use other ports probes: readiness 3001/TCP"},
+			},
+			wantCauseIn: "health checks hit a different port",
+		},
+		{
+			name: "probe on targetPort overrides declared mismatch",
+			objects: []runtime.Object{
+				service("web", withTargetPort(intstr.FromInt32(9090))),
+				pod("web-1", webLabels, withReadiness(&corev1.Probe{ProbeHandler: corev1.ProbeHandler{
+					GRPC: &corev1.GRPCAction{Port: 9090},
+				}})),
+				slice("web-abc", "web", ep{"web-1", "10.0.0.1", true}),
+			},
+			wantStatus: StatusOK, wantBroken: -1, wantHops: 2, wantExit: ExitOK,
+			wantChecks: []wantCheck{
+				{"Service", "targetPort http", StatusOK, "via probe port"},
+			},
+		},
+		{
+			name: "mismatch lists probe ports",
+			objects: []runtime.Object{
+				service("web", withTargetPort(intstr.FromInt32(8081))),
+				pod("web-1", webLabels, withReadiness(httpProbe(8080))),
+				slice("web-abc", "web", ep{"web-1", "10.0.0.1", true}),
+			},
+			wantStatus: StatusFail, wantBroken: 0, wantHops: 2, wantExit: ExitBroken,
+			wantChecks: []wantCheck{
+				{"Service", "targetPort http", StatusFail, "pods declare: http=8080/TCP probes: readiness 8080/TCP"},
+			},
+		},
+		{
+			name: "named probe port is not double counted",
+			objects: []runtime.Object{
+				service("web", withTargetPort(intstr.FromInt32(3000))),
+				pod("web-1", webLabels, withPorts(), withReadiness(&corev1.Probe{ProbeHandler: corev1.ProbeHandler{
+					HTTPGet: &corev1.HTTPGetAction{Port: intstr.FromString("http")},
+				}})),
+				slice("web-abc", "web", ep{"web-1", "10.0.0.1", true}),
+			},
+			wantStatus: StatusOK, wantBroken: -1, wantHops: 2, wantExit: ExitOK,
+			wantChecks: []wantCheck{
+				{"Service", "targetPort http", StatusInfo, "cannot verify"},
+			},
+		},
+		{
 			name: "no endpoint ready",
 			objects: []runtime.Object{
 				service("web"),
@@ -402,7 +479,7 @@ func TestTraceService(t *testing.T) {
 
 func TestTraceUnsupportedKinds(t *testing.T) {
 	tr := &Tracer{Client: fake.NewClientset()}
-	for _, k := range []Kind{KindIngress, KindDeployment} {
+	for _, k := range []Kind{KindDeployment} {
 		if _, err := tr.Trace(context.Background(), Target{Kind: k, Namespace: ns, Name: "x"}); err == nil {
 			t.Errorf("Trace(%s) succeeded, want not-implemented error", k)
 		}

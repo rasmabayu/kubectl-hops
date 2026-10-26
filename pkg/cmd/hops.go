@@ -19,6 +19,9 @@ import (
 const example = `  # Why does my Service not answer?
   kubectl hops svc/web -n shop
 
+  # Follow the Ingress rule for a host and path, including its TLS certificate
+  kubectl hops ingress/shop -n shop --host shop.example.com --path /api --check-tls
+
   # Machine-readable output for CI; exit code 1 = broken, 2 = warnings
   kubectl hops svc/web -n shop -o json`
 
@@ -30,10 +33,11 @@ type Options struct {
 	ConfigFlags *genericclioptions.ConfigFlags
 	IOStreams   genericiooptions.IOStreams
 
-	Host   string
-	Path   string
-	Output string
-	Color  string
+	Host     string
+	Path     string
+	CheckTLS bool
+	Output   string
+	Color    string
 
 	// newClient is swapped out in tests.
 	newClient func() (kubernetes.Interface, error)
@@ -98,6 +102,9 @@ func newCmd(o *Options) *cobra.Command {
 	cmd.Flags().StringVar(&o.Path, "path", "/", "Ingress path to match (ingress targets)")
 	cmd.Flags().StringVarP(&o.Output, "output", "o", "text", "Output format: text or json")
 	cmd.Flags().StringVar(&o.Color, "color", "auto", "Colorize text output: auto, always or never")
+	cmd.Flags().BoolVar(&o.CheckTLS, "check-tls", false, "Also check the Ingress TLS certificate (needs get on secrets)")
+	// Defined by hand so cobra does not claim -v, which kubectl uses for log verbosity.
+	cmd.Flags().Bool("version", false, "Print the version and exit")
 	o.ConfigFlags.AddFlags(cmd.Flags())
 	return cmd
 }
@@ -125,7 +132,7 @@ func (o *Options) Run(c *cobra.Command, arg string) error {
 		return err
 	}
 
-	t := &trace.Tracer{Client: client, Options: trace.Options{Host: o.Host, Path: o.Path}}
+	t := &trace.Tracer{Client: client, Options: trace.Options{Host: o.Host, Path: o.Path, CheckTLS: o.CheckTLS}}
 	report, err := t.Trace(c.Context(), target)
 	if err != nil {
 		return err

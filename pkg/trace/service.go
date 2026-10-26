@@ -205,6 +205,9 @@ func joinSorted(set map[string]bool, key string) string {
 // informational, but when pods declare ports and none of them match, a typo is
 // far more likely than an undeclared listener, so it is reported as a failure
 // with that caveat spelled out.
+//
+// A probe that targets the numeric port also proves something listens there,
+// which covers the common case of pods that declare no containerPorts.
 func checkTargetPorts(svc *corev1.Service, pods []corev1.Pod, hop *Hop) {
 	for _, sp := range svc.Spec.Ports {
 		tp := effectiveTargetPort(sp)
@@ -218,25 +221,40 @@ func checkTargetPorts(svc *corev1.Service, pods []corev1.Pod, hop *Hop) {
 		}
 		name := "targetPort " + portLabel
 
-		matched, declared := 0, map[string]bool{}
+		matched, viaProbe := 0, 0
+		declared, probes := map[string]bool{}, map[string]bool{}
 		for _, p := range pods {
-			if podHasPort(p, tp, proto, declared) {
+			declaredHit := podHasPort(p, tp, proto, declared)
+			probeHit := podProbesPort(p, tp, proto, probes)
+			if declaredHit || probeHit {
 				matched++
+			}
+			if probeHit && !declaredHit {
+				viaProbe++
 			}
 		}
 
 		switch {
 		case matched == len(pods):
-			hop.Add(Check{
-				Name:    name,
-				Status:  StatusOK,
-				Message: fmt.Sprintf("port %d → targetPort %s/%s found on %d/%d pod(s)", sp.Port, portString(tp), proto, matched, len(pods)),
-			})
-		case tp.Type == intstr.Int && len(declared) == 0:
+			msg := fmt.Sprintf("port %d → targetPort %s/%s found on %d/%d pod(s)", sp.Port, portString(tp), proto, matched, len(pods))
+			if viaProbe > 0 {
+				msg += fmt.Sprintf(" (via probe port on %d)", viaProbe)
+			}
+			hop.Add(Check{Name: name, Status: StatusOK, Message: msg})
+		case tp.Type == intstr.Int && len(declared) == 0 && len(probes) == 0:
 			hop.Add(Check{
 				Name:    name,
 				Status:  StatusInfo,
-				Message: fmt.Sprintf("port %d → targetPort %d: selected pods declare no containerPorts, cannot verify", sp.Port, tp.IntVal),
+				Message: fmt.Sprintf("port %d → targetPort %d: selected pods declare no containerPorts or probes, cannot verify", sp.Port, tp.IntVal),
+			})
+		case tp.Type == intstr.Int && len(declared) == 0 && matched == 0:
+			hop.Add(Check{
+				Name:    name,
+				Status:  StatusWarn,
+				Message: fmt.Sprintf("port %d → targetPort %d/%s: pods declare no containerPorts and their probes use other ports", sp.Port, tp.IntVal, proto),
+				Details: []string{"probes: " + joinKeys(probes)},
+				Cause:   fmt.Sprintf("The health checks hit a different port than the one the Service forwards to (%d). One of the two is probably wrong.", tp.IntVal),
+				Try:     []string{fmt.Sprintf("kubectl get pod %s -n %s -o jsonpath='{.spec.containers[*].readinessProbe}'", pods[0].Name, svc.Namespace)},
 			})
 		case matched > 0:
 			hop.Add(Check{
@@ -251,7 +269,7 @@ func checkTargetPorts(svc *corev1.Service, pods []corev1.Pod, hop *Hop) {
 				Name:    name,
 				Status:  StatusFail,
 				Message: fmt.Sprintf("port %d → targetPort %s/%s does not match any containerPort", sp.Port, portString(tp), proto),
-				Details: []string{"pods declare: " + joinKeys(declared)},
+				Details: portDetails(declared, probes),
 				Try: []string{
 					fmt.Sprintf("kubectl get svc %s -n %s -o jsonpath='{.spec.ports}'", svc.Name, svc.Namespace),
 					fmt.Sprintf("kubectl get pod %s -n %s -o jsonpath='{.spec.containers[*].ports}'", pods[0].Name, svc.Namespace),
@@ -292,6 +310,58 @@ func podHasPort(p corev1.Pod, tp intstr.IntOrString, proto corev1.Protocol, decl
 		}
 	}
 	return found
+}
+
+// podProbesPort reports whether a probe on any container in p targets the
+// numeric port tp, and records every numeric probe port into probes. Probes
+// are always TCP; named probe ports resolve through containerPorts, which
+// podHasPort already covers.
+func podProbesPort(p corev1.Pod, tp intstr.IntOrString, proto corev1.Protocol, probes map[string]bool) bool {
+	found := false
+	for _, c := range p.Spec.Containers {
+		for kind, pr := range map[string]*corev1.Probe{
+			"readiness": c.ReadinessProbe, "liveness": c.LivenessProbe, "startup": c.StartupProbe,
+		} {
+			port, ok := probePort(pr)
+			if !ok {
+				continue
+			}
+			probes[fmt.Sprintf("%s %d/TCP", kind, port)] = true
+			if tp.Type == intstr.Int && proto == corev1.ProtocolTCP && port == tp.IntVal {
+				found = true
+			}
+		}
+	}
+	return found
+}
+
+func probePort(pr *corev1.Probe) (int32, bool) {
+	if pr == nil {
+		return 0, false
+	}
+	var port intstr.IntOrString
+	switch {
+	case pr.HTTPGet != nil:
+		port = pr.HTTPGet.Port
+	case pr.TCPSocket != nil:
+		port = pr.TCPSocket.Port
+	case pr.GRPC != nil:
+		return pr.GRPC.Port, true
+	default:
+		return 0, false
+	}
+	if port.Type != intstr.Int || port.IntVal == 0 {
+		return 0, false
+	}
+	return port.IntVal, true
+}
+
+func portDetails(declared, probes map[string]bool) []string {
+	d := []string{"pods declare: " + joinKeys(declared)}
+	if len(probes) > 0 {
+		d = append(d, "probes: "+joinKeys(probes))
+	}
+	return d
 }
 
 func joinKeys(set map[string]bool) string {

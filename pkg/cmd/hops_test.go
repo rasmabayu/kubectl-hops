@@ -62,7 +62,10 @@ func TestRunExitCodes(t *testing.T) {
 		{"bad target", []string{"web", "-n", "shop"}, trace.ExitError, ""},
 		{"bad output", []string{"svc/web", "-o", "yaml"}, trace.ExitError, ""},
 		{"bad color", []string{"svc/web", "--color", "rainbow"}, trace.ExitError, ""},
-		{"not implemented", []string{"ingress/shop", "-n", "shop"}, trace.ExitError, ""},
+		{"ingress missing", []string{"ingress/shop", "-n", "shop", "--host", "a.example.com", "--check-tls"}, trace.ExitBroken, `Ingress "shop" not found`},
+		{"not implemented", []string{"deploy/web", "-n", "shop"}, trace.ExitError, ""},
+		{"version", []string{"--version"}, trace.ExitOK, "kubectl hops version"},
+		{"-v is not version", []string{"-v"}, trace.ExitError, ""},
 		{"no args", nil, trace.ExitError, ""},
 	}
 	for _, tc := range tests {
