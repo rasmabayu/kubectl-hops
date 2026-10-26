@@ -77,19 +77,31 @@ func (t *Tracer) traceDeployment(ctx context.Context, ns, name string) ([]Hop, e
 	}
 	hop.Add(Check{Name: "services", Status: StatusOK, Message: "selected by " + strings.Join(names, ", ")})
 
+	// Every Service selects the same pods, so their per-Service Pods hops
+	// would repeat; show the Deployment's own pods once, at the end.
 	hops := []Hop{hop}
 	for _, s := range services {
 		svcHops, err := t.traceService(ctx, ns, s.Name)
 		if err != nil {
 			return nil, err
 		}
-		hops = append(hops, svcHops...)
-	}
-	for i := range hops {
-		if hops[i].Kind == "Pods" {
-			adoptPodCause(&hops[0], "replicas", &hops[i])
-			break
+		for _, h := range svcHops {
+			if h.Kind != "Pods" {
+				hops = append(hops, h)
+			}
 		}
+	}
+	pods, err := t.deploymentPods(ctx, d)
+	if err != nil {
+		return nil, err
+	}
+	if len(pods) > 0 {
+		podsHop, err := t.podsHop(ctx, ns, name, pods)
+		if err != nil {
+			return nil, err
+		}
+		adoptPodCause(&hops[0], "replicas", &podsHop)
+		hops = append(hops, podsHop)
 	}
 	return hops, nil
 }

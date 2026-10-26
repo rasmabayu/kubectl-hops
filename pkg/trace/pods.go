@@ -18,6 +18,10 @@ const (
 	// recentRestart is how far back a container restart still counts as news.
 	recentRestart = 24 * time.Hour
 	maxDetailLen  = 200
+
+	// exitSIGKILL is 128+9: the container was killed rather than exiting.
+	exitSIGKILL  = 137
+	sigkillCause = "Exit code 137 without OOMKilled means the container was sent SIGKILL: usually a failed liveness probe, a shutdown that outlived terminationGracePeriodSeconds, or the node killing it under memory pressure."
 )
 
 // podDiagnosis is what is wrong with one pod, if anything.
@@ -173,8 +177,11 @@ func (t *Tracer) diagnosePod(ctx context.Context, p *corev1.Pod, events []corev1
 			}
 			if term := cs.LastTerminationState.Terminated; term != nil {
 				d.details = []string{fmt.Sprintf("last exit: %s, code %d", firstNonEmpty(term.Reason, "Error"), term.ExitCode)}
-				if term.Reason == "OOMKilled" {
+				switch {
+				case term.Reason == "OOMKilled":
 					d.cause = "The container is killed for exceeding its memory limit. Raise resources.limits.memory or find what uses the memory."
+				case term.ExitCode == exitSIGKILL:
+					d.cause = sigkillCause
 				}
 			}
 			return d, nil
@@ -235,7 +242,7 @@ func (t *Tracer) diagnosePod(ctx context.Context, p *corev1.Pod, events []corev1
 func (t *Tracer) recentRestarts(p *corev1.Pod, events []corev1.Event, describe string) podDiagnosis {
 	now := t.now()
 	var parts, details []string
-	oom := false
+	oom, sigkill := false, false
 	for _, cs := range allContainerStatuses(p) {
 		term := cs.LastTerminationState.Terminated
 		if cs.RestartCount == 0 || term == nil || now.Sub(term.FinishedAt.Time) > recentRestart {
@@ -243,8 +250,11 @@ func (t *Tracer) recentRestarts(p *corev1.Pod, events []corev1.Event, describe s
 		}
 		parts = append(parts, fmt.Sprintf("container %s restarted %d time(s), last %s ago", cs.Name, cs.RestartCount, shortDuration(now.Sub(term.FinishedAt.Time))))
 		details = append(details, fmt.Sprintf("%s last exit: %s, code %d", cs.Name, firstNonEmpty(term.Reason, "Error"), term.ExitCode))
-		if term.Reason == "OOMKilled" {
+		switch {
+		case term.Reason == "OOMKilled":
 			oom = true
+		case term.ExitCode == exitSIGKILL:
+			sigkill = true
 		}
 	}
 	if len(parts) == 0 {
@@ -254,8 +264,11 @@ func (t *Tracer) recentRestarts(p *corev1.Pod, events []corev1.Event, describe s
 		details = append(details, truncate(e.Message)+countSuffix(e.Count))
 	}
 	cause := "The pod is serving but restarted in the last 24h; each restart drops in-flight requests."
-	if oom {
+	switch {
+	case oom:
 		cause = "The pod restarted after being OOMKilled; it is close to its memory limit and will likely be killed again."
+	case sigkill:
+		cause = "The pod restarted in the last 24h. " + sigkillCause
 	}
 	return podDiagnosis{
 		status:  StatusWarn,

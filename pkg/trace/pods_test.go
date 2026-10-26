@@ -227,6 +227,23 @@ func TestPodsHop(t *testing.T) {
 			wantCause: "OOMKilled",
 		},
 		{
+			name: "SIGKILL restart is explained",
+			objects: []runtime.Object{service("web"), readySlice,
+				pod("web-1", webLabels, lastExit("Error", 137, 1, 6*time.Hour)),
+			},
+			wantStatus: StatusWarn,
+			wantChecks: []check{{"Pods", "pod web-1", StatusWarn, "last 6h ago Error, code 137"}},
+			wantCause:  "sent SIGKILL",
+		},
+		{
+			name: "crash loop with SIGKILL",
+			objects: []runtime.Object{service("web"), notReadySlice,
+				pod("web-1", webLabels, waiting("CrashLoopBackOff", ""), lastExit("Error", 137, 9, time.Minute))},
+			wantStatus: StatusFail,
+			wantChecks: []check{{"Pods", "pod web-1", StatusFail, "code 137"}},
+			wantCause:  "failed liveness probe",
+		},
+		{
 			name:            "old restart is not news",
 			objects:         []runtime.Object{service("web"), readySlice, pod("web-1", webLabels, lastExit("Error", 1, 1, 72*time.Hour))},
 			wantStatus:      StatusOK,
@@ -404,7 +421,7 @@ func TestTraceDeployment(t *testing.T) {
 				ingress(),
 			}, backend...),
 			wantStatus: StatusFail, // web-internal has no EndpointSlices
-			wantKinds:  "Deployment Service EndpointSlices Pods Service EndpointSlices Pods",
+			wantKinds:  "Deployment Service EndpointSlices Service EndpointSlices Pods",
 			wantChecks: []check{
 				{"Deployment", "services", StatusOK, "selected by svc/web, svc/web-internal"},
 				{"Deployment", "ingresses", StatusInfo, "exposed via ingress/shop (shop.example.com/)"},
