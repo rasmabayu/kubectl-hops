@@ -98,15 +98,16 @@ func ingressClass(name, controller string, isDefault bool) *networkingv1.Ingress
 }
 
 func controllerPod(name string, ready bool) *corev1.Pod {
+	return labeledPod(name, "ingress-nginx", map[string]string{"app.kubernetes.io/name": "ingress-nginx"}, ready)
+}
+
+func labeledPod(name, namespace string, lbls map[string]string, ready bool) *corev1.Pod {
 	status := corev1.ConditionFalse
 	if ready {
 		status = corev1.ConditionTrue
 	}
 	return &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: name, Namespace: "ingress-nginx",
-			Labels: map[string]string{"app.kubernetes.io/name": "ingress-nginx"},
-		},
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace, Labels: lbls},
 		Status: corev1.PodStatus{
 			Phase:      corev1.PodRunning,
 			Conditions: []corev1.PodCondition{{Type: corev1.PodReady, Status: status}},
@@ -212,8 +213,27 @@ func TestTraceIngress(t *testing.T) {
 			name: "controller not running",
 			objects: append([]runtime.Object{ingress(), ingressClass("nginx", "k8s.io/ingress-nginx", false)},
 				healthyBackend()...),
+			wantStatus: StatusWarn, wantBroken: -1, wantHops: 3,
+			wantChecks: []check{{"Ingress", "controller", StatusWarn, "no ingress-nginx pods found with the standard labels"}},
+			wantCause:  "non-standard labels",
+		},
+		{
+			name: "Kong from the Helm chart",
+			objects: append([]runtime.Object{
+				ingress(withClass("kong")), ingressClass("kong", "ingress-controllers.konghq.com/kong", false),
+				labeledPod("kong-kong-1", "kong", map[string]string{"app.kubernetes.io/name": "kong"}, true),
+			}, healthyBackend()...),
+			wantStatus: StatusOK, wantBroken: -1, wantHops: 3,
+			wantChecks: []check{{"Ingress", "controller", StatusOK, "1/1 Kong pods ready in kong"}},
+		},
+		{
+			name: "Kong from the all-in-one manifest",
+			objects: append([]runtime.Object{
+				ingress(withClass("kong")), ingressClass("kong", "ingress-controllers.konghq.com/kong", false),
+				labeledPod("ingress-kong-1", "kong", map[string]string{"app": "ingress-kong"}, false),
+			}, healthyBackend()...),
 			wantStatus: StatusFail, wantBroken: 0, wantHops: 3,
-			wantChecks: []check{{"Ingress", "controller", StatusFail, "no ingress-nginx pods found"}},
+			wantChecks: []check{{"Ingress", "controller", StatusFail, "0/1 Kong pods ready"}},
 		},
 		{
 			name: "controller not ready",

@@ -98,7 +98,7 @@ func newCmd(o *Options) *cobra.Command {
 			return o.Run(c, args[0])
 		},
 	}
-	cmd.Flags().StringVar(&o.Host, "host", "", "Ingress host to match (ingress targets)")
+	cmd.Flags().StringVar(&o.Host, "host", "", "Ingress host to match; a full URL also sets --path (ingress targets)")
 	cmd.Flags().StringVar(&o.Path, "path", "/", "Ingress path to match (ingress targets)")
 	cmd.Flags().StringVarP(&o.Output, "output", "o", "text", "Output format: text or json")
 	cmd.Flags().StringVar(&o.Color, "color", "auto", "Colorize text output: auto, always or never")
@@ -127,12 +127,21 @@ func (o *Options) Run(c *cobra.Command, arg string) error {
 	if err != nil {
 		return err
 	}
+	host, urlPath, err := trace.ParseHost(o.Host)
+	if err != nil {
+		return err
+	}
+	path := o.Path
+	// "--host https://shop.example.com/api" also sets the path, unless --path says otherwise.
+	if urlPath != "" && !c.Flags().Changed("path") {
+		path = urlPath
+	}
 	client, err := o.newClient()
 	if err != nil {
 		return err
 	}
 
-	t := &trace.Tracer{Client: client, Options: trace.Options{Host: o.Host, Path: o.Path, CheckTLS: o.CheckTLS}}
+	t := &trace.Tracer{Client: client, Options: trace.Options{Host: host, Path: path, CheckTLS: o.CheckTLS}}
 	report, err := t.Trace(c.Context(), target)
 	if err != nil {
 		return err

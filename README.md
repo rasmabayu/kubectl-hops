@@ -85,7 +85,7 @@ All standard kubeconfig flags work (`--context`, `--kubeconfig`, `--as`, `--requ
 |------|---------|---------|
 | `-o, --output` | `text` | `text` (tree) or `json` |
 | `--color` | `auto` | `auto` (TTY and no `NO_COLOR`), `always`, `never` |
-| `--host` | first rule host | Ingress host to follow; exact hosts beat `*.wildcard` hosts, which beat catch-all rules |
+| `--host` | first rule host | Ingress host to follow; exact hosts beat `*.wildcard` hosts, which beat catch-all rules. A pasted URL works too: `https://shop.example.com/api` sets host and path |
 | `--path` | `/` | Request path; the longest matching path wins, `Exact` beats `Prefix` |
 | `--check-tls` | off | Read the Ingress TLS secret and check expiry and SANs (only `tls.crt` is parsed) |
 | `--version` | | Print the version (`-v` is left alone; kubectl uses it for log verbosity) |
@@ -107,7 +107,7 @@ Designed to gate CI and smoke tests after a deploy:
 |-----|-------|--------|
 | **Ingress** | Ingress exists | ✅ M2 |
 | | IngressClass resolves (`spec.ingressClassName`, the deprecated annotation, or the single default class) | ✅ M2 |
-| | Controller pods run and are ready (ingress-nginx, NGINX Inc., Traefik, HAProxy, AWS LBC; managed GKE/Azure noted) | ✅ M2 |
+| | Controller pods run and are ready (ingress-nginx, NGINX Inc., Kong, Traefik, HAProxy, AWS LBC; managed GKE/Azure noted). No pods with the standard labels is a `⚠`, since custom installs relabel | ✅ M2 |
 | | The controller has published an address in `status` | ✅ M2 |
 | | A rule matches `--host`/`--path` the way controllers pick it, else `defaultBackend`, else ✖ with the rules that exist | ✅ M2 |
 | | Backend Service exists and exposes the backend port (by name or number) | ✅ M2 |

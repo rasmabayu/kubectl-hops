@@ -23,22 +23,28 @@ const (
 
 // controllerInfo says how to find the pods of a known ingress controller.
 type controllerInfo struct {
-	name     string
-	selector string
+	name string
+	// selectors are tried in order, since installs differ (Helm chart vs manifests).
+	selectors []string
 	// managed controllers run outside the cluster (cloud load balancers).
 	managed bool
 }
 
 // knownControllers is keyed by IngressClass spec.controller.
 var knownControllers = map[string]controllerInfo{
-	"k8s.io/ingress-nginx":                   {name: "ingress-nginx", selector: "app.kubernetes.io/name=ingress-nginx"},
-	"nginx.org/ingress-controller":           {name: "NGINX Ingress Controller", selector: "app.kubernetes.io/name=nginx-ingress"},
-	"traefik.io/ingress-controller":          {name: "Traefik", selector: "app.kubernetes.io/name=traefik"},
-	"haproxy.org/ingress-controller/haproxy": {name: "HAProxy", selector: "app.kubernetes.io/name=kubernetes-ingress"},
-	"ingress.k8s.aws/alb":                    {name: "AWS Load Balancer Controller", selector: "app.kubernetes.io/name=aws-load-balancer-controller"},
-	"k8s.io/ingress-gce":                     {name: "GKE Ingress", managed: true},
-	"networking.gke.io/ingress-gce":          {name: "GKE Ingress", managed: true},
-	"azure/application-gateway":              {name: "Azure Application Gateway", managed: true},
+	"k8s.io/ingress-nginx":                   {name: "ingress-nginx", selectors: []string{"app.kubernetes.io/name=ingress-nginx"}},
+	"nginx.org/ingress-controller":           {name: "NGINX Ingress Controller", selectors: []string{"app.kubernetes.io/name=nginx-ingress"}},
+	"traefik.io/ingress-controller":          {name: "Traefik", selectors: []string{"app.kubernetes.io/name=traefik"}},
+	"haproxy.org/ingress-controller/haproxy": {name: "HAProxy", selectors: []string{"app.kubernetes.io/name=kubernetes-ingress"}},
+	"ingress.k8s.aws/alb":                    {name: "AWS Load Balancer Controller", selectors: []string{"app.kubernetes.io/name=aws-load-balancer-controller"}},
+	"ingress-controllers.konghq.com/kong": {name: "Kong", selectors: []string{
+		"app.kubernetes.io/name=kong",
+		"app=ingress-kong",
+		"app.kubernetes.io/name=controller,app.kubernetes.io/instance=kong",
+	}},
+	"k8s.io/ingress-gce":            {name: "GKE Ingress", managed: true},
+	"networking.gke.io/ingress-gce": {name: "GKE Ingress", managed: true},
+	"azure/application-gateway":     {name: "Azure Application Gateway", managed: true},
 }
 
 // legacyClassControllers maps common values of the deprecated
@@ -218,40 +224,47 @@ func (t *Tracer) checkController(ctx context.Context, controller string, hop *Ho
 		return nil
 	}
 
-	list, err := t.Client.CoreV1().Pods(metav1.NamespaceAll).List(ctx, metav1.ListOptions{LabelSelector: info.selector})
-	if apierrors.IsForbidden(err) {
-		hop.Add(Check{Name: "controller", Status: StatusInfo, Message: fmt.Sprintf("not allowed to list pods cluster-wide; %s pods not checked", info.name)})
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("list %s pods: %w", info.name, err)
-	}
-
 	var total, ready int
 	namespaces := map[string]bool{}
 	var firstNS string
-	for _, p := range list.Items {
-		if p.Status.Phase == corev1.PodSucceeded || p.Status.Phase == corev1.PodFailed {
-			continue // admission jobs and the like
+	selector := info.selectors[0]
+	for _, sel := range info.selectors {
+		list, err := t.Client.CoreV1().Pods(metav1.NamespaceAll).List(ctx, metav1.ListOptions{LabelSelector: sel})
+		if apierrors.IsForbidden(err) {
+			hop.Add(Check{Name: "controller", Status: StatusInfo, Message: fmt.Sprintf("not allowed to list pods cluster-wide; %s pods not checked", info.name)})
+			return nil
 		}
-		total++
-		namespaces[p.Namespace] = true
-		if firstNS == "" {
-			firstNS = p.Namespace
+		if err != nil {
+			return fmt.Errorf("list %s pods: %w", info.name, err)
 		}
-		if podReady(&p) {
-			ready++
+		for _, p := range list.Items {
+			if p.Status.Phase == corev1.PodSucceeded || p.Status.Phase == corev1.PodFailed {
+				continue // admission jobs and the like
+			}
+			total++
+			namespaces[p.Namespace] = true
+			if firstNS == "" {
+				firstNS = p.Namespace
+			}
+			if podReady(&p) {
+				ready++
+			}
+		}
+		if total > 0 {
+			selector = sel
+			break
 		}
 	}
-	try := []string{fmt.Sprintf("kubectl get pods -A -l %s", info.selector)}
+	try := []string{fmt.Sprintf("kubectl get pods -A -l %s", selector)}
 
 	switch {
 	case total == 0:
+		// A miss may also be an install with non-standard labels, so only warn.
 		hop.Add(Check{
 			Name:    "controller",
-			Status:  StatusFail,
-			Message: fmt.Sprintf("no %s pods found (%s)", info.name, info.selector),
-			Cause:   fmt.Sprintf("Nothing is running to serve this IngressClass, so requests never reach %s.", info.name),
+			Status:  StatusWarn,
+			Message: fmt.Sprintf("no %s pods found with the standard labels (%s)", info.name, strings.Join(info.selectors, " | ")),
+			Cause:   fmt.Sprintf("Either %s is not running, so nothing serves this IngressClass, or it was installed with non-standard labels.", info.name),
 			Try:     try,
 		})
 	case ready == 0:

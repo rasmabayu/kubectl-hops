@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/cli-runtime/pkg/genericiooptions"
@@ -81,6 +82,46 @@ func TestRunExitCodes(t *testing.T) {
 				t.Errorf("non-terminal output is colored")
 			}
 		})
+	}
+}
+
+func TestRunHostAsURL(t *testing.T) {
+	impl := networkingv1.PathTypeImplementationSpecific
+	backend := func(svc string) networkingv1.IngressBackend {
+		return networkingv1.IngressBackend{Service: &networkingv1.IngressServiceBackend{Name: svc, Port: networkingv1.ServiceBackendPort{Number: 80}}}
+	}
+	ing := &networkingv1.Ingress{
+		ObjectMeta: metav1.ObjectMeta{Name: "docs", Namespace: "shop"},
+		Spec: networkingv1.IngressSpec{Rules: []networkingv1.IngressRule{{
+			Host: "docs.example.com",
+			IngressRuleValue: networkingv1.IngressRuleValue{HTTP: &networkingv1.HTTPIngressRuleValue{Paths: []networkingv1.HTTPIngressPath{
+				{Path: "/", PathType: &impl, Backend: backend("root")},
+				{Path: "/api", PathType: &impl, Backend: backend("api")},
+			}}},
+		}}},
+	}
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"scheme is stripped", []string{"--host", "https://Docs.Example.com"}, "docs.example.com/ matches path / (ImplementationSpecific) → svc/root:80"},
+		{"URL path is used", []string{"--host", "https://docs.example.com/api/v1"}, "docs.example.com/api/v1 matches path /api"},
+		{"--path wins over URL path", []string{"--host", "https://docs.example.com/api", "--path", "/"}, "→ svc/root:80"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			out, _, err := run(t, []runtime.Object{ing}, append([]string{"ingress/docs", "-n", "shop"}, tc.args...)...)
+			if ExitCode(err) == trace.ExitError {
+				t.Fatalf("trace failed: %v", err)
+			}
+			if !strings.Contains(out, tc.want) {
+				t.Errorf("output missing %q\n%s", tc.want, out)
+			}
+		})
+	}
+	if _, code, _ := run(t, nil, "ingress/docs", "-n", "shop", "--host", "10.0.0.1"); code != trace.ExitError {
+		t.Errorf("IP as --host: exit %d, want %d", code, trace.ExitError)
 	}
 }
 
