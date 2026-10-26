@@ -4,7 +4,7 @@
 
 `kubectl hops` follows **Ingress → Service → EndpointSlices → Pods** (plus NetworkPolicy), runs read-only checks on every hop and points at the first one that is broken, with a plain-language *likely cause* and concrete commands to try next.
 
-> **Status: early development (milestone M2 in progress).** Tracing from `ingress/<name>` and `svc/<name>` works today. Pod, `deploy/<name>` and NetworkPolicy checks are on the [roadmap](#roadmap).
+> **Status: early development (milestone M2 done).** Tracing from `ingress/<name>`, `svc/<name>` and `deploy/<name>` works today, down to a diagnosis of each pod. NetworkPolicy checks and end-to-end tests are next on the [roadmap](#roadmap).
 
 ```text
 $ kubectl hops ingress/shop -n shop --host shop.example.com --path /api/orders --check-tls
@@ -33,6 +33,39 @@ Likely cause: The Ingress backend names a port the Service does not expose (Ingr
 Try:
   kubectl get svc web -n shop -o jsonpath='{.spec.ports}'
   kubectl get ingress shop -n shop -o yaml
+```
+
+Starting from a Deployment finds the Services that select it and the Ingresses in front of them, and explains each unhealthy pod. One crashing replica out of two degrades the path rather than breaking it:
+
+```text
+$ kubectl hops deploy/api -n shop
+Tracing Deployment shop/api
+
+⚠ Deployment shop/api
+├─ ✔ exists: generation 1
+├─ ⚠ replicas: 1/2 replicas ready
+├─ ℹ ingresses: exposed via ingress/shop (shop.example.com/api)
+└─ ✔ services: selected by svc/api
+  ↓
+✔ Service shop/api
+├─ ✔ exists: ClusterIP, ports 80→http
+├─ ✔ selector: selector app=api matches 2 pod(s)
+└─ ✔ targetPort http: port 80 → targetPort http/TCP found on 2/2 pod(s)
+  ↓
+⚠ EndpointSlices shop/api
+└─ ⚠ endpoints: 1/2 endpoints ready
+      not ready: api-7c9f-q8m
+  ↓
+⚠ Pods shop/api
+├─ ⚠ ready: 1/2 pod(s) ready
+└─ ⚠ pod api-7c9f-q8m: container app: CrashLoopBackOff, 6 restart(s)
+      last exit: OOMKilled, code 137
+
+Result: DEGRADED (traffic flows, but check the warnings)
+Likely cause: The container is killed for exceeding its memory limit. Raise resources.limits.memory or find what uses the memory.
+Try:
+  kubectl logs api-7c9f-q8m -n shop -c app --previous
+  kubectl describe pod api-7c9f-q8m -n shop
 ```
 
 Starting from a Service skips the Ingress hop:
@@ -76,7 +109,7 @@ Plenty of plugins explain *one failing pod*. `kubectl hops` explains the *path*:
 ```sh
 kubectl hops ingress/<name> [-n namespace] [--host h] [--path p] [--check-tls] [-o text|json]
 kubectl hops svc/<name>     [-n namespace] [-o text|json]
-kubectl hops deploy/<name>  [-n namespace]                       # planned
+kubectl hops deploy/<name>  [-n namespace] [-o text|json]
 ```
 
 All standard kubeconfig flags work (`--context`, `--kubeconfig`, `--as`, `--request-timeout`, …).
@@ -117,7 +150,11 @@ Designed to gate CI and smoke tests after a deploy:
 | | Selector is non-empty and matches running pods; on a miss, a per-label breakdown with the values that *do* exist | ✅ M1 |
 | | `targetPort` (number, name or default) matches a `containerPort` or a readiness/liveness/startup probe port, with the same protocol | ✅ M2 |
 | **EndpointSlices** | Ready vs not-ready endpoints (deduplicated across dual-stack slices) | ✅ M1 |
-| **Pods** | Ready, readiness-probe failures from events, CrashLoopBackOff / OOMKilled / restarts, node NotReady | M2 |
+| **Pods** | Why each pod is not ready, in the order you would check: Unschedulable, image pull errors, missing ConfigMap/Secret, CrashLoopBackOff (with OOMKilled or exit code), node NotReady, readiness-probe failures from events | ✅ M2 |
+| | Ready pods that restarted in the last 24h (OOMKilled called out, liveness failures attached) → `⚠` | ✅ M2 |
+| | A broken pod is `✖` only when no pod is ready; otherwise traffic still flows and it is `⚠`. At most 5 pods are listed, failures first | ✅ M2 |
+| **Deployment** | Ready vs desired replicas, scaled to zero, rollout stuck (`ProgressDeadlineExceeded`) or in progress | ✅ M2 |
+| | Services whose selector matches the pod template (each one traced), Ingresses routing to them | ✅ M2 |
 | **NetworkPolicy** | Policies that select the target pods without an obvious rule allowing the ingress controller on that port → `⚠` | M3 |
 
 A note on `targetPort`: `containerPort` is informational, so a numeric `targetPort` only needs the process to listen. A probe aimed at that port proves something listens there, so it counts as a match. When pods declare ports and neither they nor a probe match, a typo is far more likely than an undeclared listener, so `hops` reports a failure and says so in the cause. When pods declare nothing and their probes use another port, it is a warning. A **named** `targetPort` that no container defines is always fatal, because the endpoint controller cannot resolve it.
@@ -138,12 +175,12 @@ flowchart LR
 - `pkg/render` knows nothing about Kubernetes; it renders a `Report`.
 - `pkg/cmd` wires flags, the client and exit codes.
 
-The plugin needs only `get`/`list` on the objects it walks (Ingresses, IngressClasses, Services, EndpointSlices, Pods; Secrets only with `--check-tls`); it never writes to the cluster or sends traffic. Missing permissions for optional checks, such as listing controller pods cluster-wide, turn those checks into notes instead of errors.
+The plugin needs only `get`/`list` on the objects it walks (Deployments, Ingresses, IngressClasses, Services, EndpointSlices, Pods, Events, Nodes; Secrets only with `--check-tls`); it never writes to the cluster or sends traffic. Missing permissions for optional checks, such as listing controller pods cluster-wide, turn those checks into notes instead of errors.
 
 ## Roadmap
 
 - **M1** — CLI skeleton, Service and EndpointSlices checks, text/JSON renderer, table-driven unit tests. ✅
-- **M2** — Ingress hop incl. `--check-tls` ✅, probe-aware `targetPort` check ✅; next: Pod checks and `deploy/<name>` resolving the Services that select it.
+- **M2** — Ingress hop incl. `--check-tls`, probe-aware `targetPort` check, Pods hop, `deploy/<name>`. ✅
 - **M3** — Static NetworkPolicy check; end-to-end tests on kind using `examples/broken/*.yaml` (selector mismatch, wrong targetPort, failing readiness probe, missing backend, deny-all policy), which double as the demo; vhs GIF.
 - **M4** — goreleaser multi-arch release and krew manifest.
 - **Later** — Gateway API `HTTPRoute`, `--watch`, Istio `VirtualService`.

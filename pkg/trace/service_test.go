@@ -52,12 +52,22 @@ func pod(name string, lbls map[string]string, opts ...podOpt) *corev1.Pod {
 			Name:  "app",
 			Ports: []corev1.ContainerPort{{Name: "http", ContainerPort: 8080}},
 		}}},
-		Status: corev1.PodStatus{Phase: corev1.PodRunning},
+		Status: corev1.PodStatus{
+			Phase:             corev1.PodRunning,
+			Conditions:        []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}},
+			ContainerStatuses: []corev1.ContainerStatus{{Name: "app", Ready: true, Image: "web:1.0"}},
+		},
 	}
 	for _, o := range opts {
 		o(p)
 	}
 	return p
+}
+
+// notReady marks the pod and its container not ready.
+func notReady(p *corev1.Pod) {
+	p.Status.Conditions[0].Status = corev1.ConditionFalse
+	p.Status.ContainerStatuses[0].Ready = false
 }
 
 func withPorts(ports ...corev1.ContainerPort) podOpt {
@@ -134,7 +144,7 @@ func TestTraceService(t *testing.T) {
 				pod("web-2", webLabels),
 				slice("web-abc", "web", ep{"web-1", "10.0.0.1", true}, ep{"web-2", "10.0.0.2", true}),
 			},
-			wantStatus: StatusOK, wantBroken: -1, wantHops: 2, wantExit: ExitOK,
+			wantStatus: StatusOK, wantBroken: -1, wantHops: 3, wantExit: ExitOK,
 			wantChecks: []wantCheck{
 				{"Service", "exists", StatusOK, "ClusterIP, ports 80→http"},
 				{"Service", "selector", StatusOK, "matches 2 pod(s)"},
@@ -193,7 +203,7 @@ func TestTraceService(t *testing.T) {
 				pod("web-1", webLabels),
 				slice("web-abc", "web", ep{"web-1", "10.0.0.1", true}),
 			},
-			wantStatus: StatusFail, wantBroken: 0, wantHops: 2, wantExit: ExitBroken,
+			wantStatus: StatusFail, wantBroken: 0, wantHops: 3, wantExit: ExitBroken,
 			wantChecks: []wantCheck{
 				{"Service", "targetPort http", StatusFail, "8081/TCP does not match any containerPort pods declare: http=8080/TCP"},
 				{"EndpointSlices", "endpoints", StatusOK, "1/1"},
@@ -207,7 +217,7 @@ func TestTraceService(t *testing.T) {
 				pod("web-1", webLabels, withPorts(corev1.ContainerPort{ContainerPort: 80})),
 				slice("web-abc", "web", ep{"web-1", "10.0.0.1", true}),
 			},
-			wantStatus: StatusOK, wantBroken: -1, wantHops: 2, wantExit: ExitOK,
+			wantStatus: StatusOK, wantBroken: -1, wantHops: 3, wantExit: ExitOK,
 			wantChecks: []wantCheck{
 				{"Service", "targetPort http", StatusOK, "targetPort 80/TCP"},
 			},
@@ -221,7 +231,7 @@ func TestTraceService(t *testing.T) {
 				pod("web-1", webLabels, withPorts(corev1.ContainerPort{ContainerPort: 53, Protocol: corev1.ProtocolTCP})),
 				slice("dns-abc", "dns", ep{"web-1", "10.0.0.1", true}),
 			},
-			wantStatus: StatusFail, wantBroken: 0, wantHops: 2, wantExit: ExitBroken,
+			wantStatus: StatusFail, wantBroken: 0, wantHops: 3, wantExit: ExitBroken,
 			wantChecks: []wantCheck{
 				{"Service", "targetPort dns", StatusFail, "53/UDP does not match"},
 			},
@@ -232,7 +242,7 @@ func TestTraceService(t *testing.T) {
 				service("web"),
 				pod("web-1", webLabels, withPorts(corev1.ContainerPort{Name: "web", ContainerPort: 8080})),
 			},
-			wantStatus: StatusFail, wantBroken: 0, wantHops: 2, wantExit: ExitBroken,
+			wantStatus: StatusFail, wantBroken: 0, wantHops: 3, wantExit: ExitBroken,
 			wantChecks: []wantCheck{
 				{"Service", "targetPort http", StatusFail, "http/TCP does not match"},
 				{"EndpointSlices", "endpoints", StatusFail, "0 endpoints although 1 pod(s)"},
@@ -247,7 +257,7 @@ func TestTraceService(t *testing.T) {
 				pod("web-old", webLabels, withPorts(corev1.ContainerPort{Name: "web", ContainerPort: 8080})),
 				slice("web-abc", "web", ep{"web-1", "10.0.0.1", true}),
 			},
-			wantStatus: StatusWarn, wantBroken: -1, wantHops: 2, wantExit: ExitWarning,
+			wantStatus: StatusWarn, wantBroken: -1, wantHops: 3, wantExit: ExitWarning,
 			wantChecks: []wantCheck{
 				{"Service", "targetPort http", StatusWarn, "found on only 1/2"},
 			},
@@ -259,7 +269,7 @@ func TestTraceService(t *testing.T) {
 				pod("web-1", webLabels, withPorts()),
 				slice("web-abc", "web", ep{"web-1", "10.0.0.1", true}),
 			},
-			wantStatus: StatusOK, wantBroken: -1, wantHops: 2, wantExit: ExitOK,
+			wantStatus: StatusOK, wantBroken: -1, wantHops: 3, wantExit: ExitOK,
 			wantChecks: []wantCheck{
 				{"Service", "targetPort http", StatusInfo, "cannot verify"},
 			},
@@ -271,7 +281,7 @@ func TestTraceService(t *testing.T) {
 				pod("web-1", webLabels, withPorts(), withReadiness(httpProbe(3000))),
 				slice("web-abc", "web", ep{"web-1", "10.0.0.1", true}),
 			},
-			wantStatus: StatusOK, wantBroken: -1, wantHops: 2, wantExit: ExitOK,
+			wantStatus: StatusOK, wantBroken: -1, wantHops: 3, wantExit: ExitOK,
 			wantChecks: []wantCheck{
 				{"Service", "targetPort http", StatusOK, "3000/TCP found on 1/1 pod(s) (via probe port on 1)"},
 			},
@@ -285,7 +295,7 @@ func TestTraceService(t *testing.T) {
 				}})),
 				slice("web-abc", "web", ep{"web-1", "10.0.0.1", true}),
 			},
-			wantStatus: StatusWarn, wantBroken: -1, wantHops: 2, wantExit: ExitWarning,
+			wantStatus: StatusWarn, wantBroken: -1, wantHops: 3, wantExit: ExitWarning,
 			wantChecks: []wantCheck{
 				{"Service", "targetPort http", StatusWarn, "probes use other ports probes: readiness 3001/TCP"},
 			},
@@ -300,7 +310,7 @@ func TestTraceService(t *testing.T) {
 				}})),
 				slice("web-abc", "web", ep{"web-1", "10.0.0.1", true}),
 			},
-			wantStatus: StatusOK, wantBroken: -1, wantHops: 2, wantExit: ExitOK,
+			wantStatus: StatusOK, wantBroken: -1, wantHops: 3, wantExit: ExitOK,
 			wantChecks: []wantCheck{
 				{"Service", "targetPort http", StatusOK, "via probe port"},
 			},
@@ -312,7 +322,7 @@ func TestTraceService(t *testing.T) {
 				pod("web-1", webLabels, withReadiness(httpProbe(8080))),
 				slice("web-abc", "web", ep{"web-1", "10.0.0.1", true}),
 			},
-			wantStatus: StatusFail, wantBroken: 0, wantHops: 2, wantExit: ExitBroken,
+			wantStatus: StatusFail, wantBroken: 0, wantHops: 3, wantExit: ExitBroken,
 			wantChecks: []wantCheck{
 				{"Service", "targetPort http", StatusFail, "pods declare: http=8080/TCP probes: readiness 8080/TCP"},
 			},
@@ -326,7 +336,7 @@ func TestTraceService(t *testing.T) {
 				}})),
 				slice("web-abc", "web", ep{"web-1", "10.0.0.1", true}),
 			},
-			wantStatus: StatusOK, wantBroken: -1, wantHops: 2, wantExit: ExitOK,
+			wantStatus: StatusOK, wantBroken: -1, wantHops: 3, wantExit: ExitOK,
 			wantChecks: []wantCheck{
 				{"Service", "targetPort http", StatusInfo, "cannot verify"},
 			},
@@ -339,7 +349,7 @@ func TestTraceService(t *testing.T) {
 				pod("web-2", webLabels),
 				slice("web-abc", "web", ep{"web-1", "10.0.0.1", false}, ep{"web-2", "10.0.0.2", false}),
 			},
-			wantStatus: StatusFail, wantBroken: 1, wantHops: 2, wantExit: ExitBroken,
+			wantStatus: StatusFail, wantBroken: 1, wantHops: 3, wantExit: ExitBroken,
 			wantChecks: []wantCheck{
 				{"Service", "selector", StatusOK, ""},
 				{"EndpointSlices", "endpoints", StatusFail, "0/2 endpoints ready not ready: web-1, web-2"},
@@ -354,7 +364,7 @@ func TestTraceService(t *testing.T) {
 				pod("web-2", webLabels),
 				slice("web-abc", "web", ep{"web-1", "10.0.0.1", true}, ep{"web-2", "10.0.0.2", false}),
 			},
-			wantStatus: StatusWarn, wantBroken: -1, wantHops: 2, wantExit: ExitWarning,
+			wantStatus: StatusWarn, wantBroken: -1, wantHops: 3, wantExit: ExitWarning,
 			wantChecks: []wantCheck{
 				{"EndpointSlices", "endpoints", StatusWarn, "1/2 endpoints ready"},
 			},
@@ -368,7 +378,7 @@ func TestTraceService(t *testing.T) {
 				slice("web-v6", "web", ep{"web-1", "fd00::1", true}),
 				slice("other", "api", ep{"api-1", "10.0.0.9", false}),
 			},
-			wantStatus: StatusOK, wantBroken: -1, wantHops: 2, wantExit: ExitOK,
+			wantStatus: StatusOK, wantBroken: -1, wantHops: 3, wantExit: ExitOK,
 			wantChecks: []wantCheck{
 				{"EndpointSlices", "endpoints", StatusOK, "1/1 endpoints ready"},
 			},
@@ -392,7 +402,7 @@ func TestTraceService(t *testing.T) {
 				pod("web-1", webLabels),
 				slice("web-abc", "web", ep{"web-1", "10.0.0.1", true}),
 			},
-			wantStatus: StatusOK, wantBroken: -1, wantHops: 2, wantExit: ExitOK,
+			wantStatus: StatusOK, wantBroken: -1, wantHops: 3, wantExit: ExitOK,
 			wantChecks: []wantCheck{
 				{"Service", "headless", StatusInfo, "clusterIP: None"},
 			},
@@ -416,7 +426,7 @@ func TestTraceService(t *testing.T) {
 				pod("web-1", webLabels),
 				slice("web-abc", "web", ep{"web-1", "10.0.0.1", true}),
 			},
-			wantStatus: StatusOK, wantBroken: -1, wantHops: 2, wantExit: ExitOK,
+			wantStatus: StatusOK, wantBroken: -1, wantHops: 3, wantExit: ExitOK,
 			wantChecks: []wantCheck{
 				{"EndpointSlices", "publishNotReadyAddresses", StatusInfo, "not ready"},
 			},
@@ -479,10 +489,8 @@ func TestTraceService(t *testing.T) {
 
 func TestTraceUnsupportedKinds(t *testing.T) {
 	tr := &Tracer{Client: fake.NewClientset()}
-	for _, k := range []Kind{KindDeployment} {
-		if _, err := tr.Trace(context.Background(), Target{Kind: k, Namespace: ns, Name: "x"}); err == nil {
-			t.Errorf("Trace(%s) succeeded, want not-implemented error", k)
-		}
+	if _, err := tr.Trace(context.Background(), Target{Kind: "Pod", Namespace: ns, Name: "x"}); err == nil {
+		t.Error("Trace(Pod) succeeded, want unsupported-kind error")
 	}
 }
 

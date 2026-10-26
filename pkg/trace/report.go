@@ -133,22 +133,33 @@ func (r *Report) Finalize() {
 
 // PrimaryIssue returns the check that best explains the report's status: the
 // first failing check of the first broken hop, otherwise the first warning.
+// Checks that carry a likely cause are preferred over bare summaries.
 func (r *Report) PrimaryIssue() *Check {
 	if r.FirstBroken >= 0 {
-		for i := range r.Hops[r.FirstBroken].Checks {
-			if c := &r.Hops[r.FirstBroken].Checks[i]; c.Status == StatusFail {
+		if c := firstWith(r.Hops[r.FirstBroken:r.FirstBroken+1], StatusFail); c != nil {
+			return c
+		}
+	}
+	return firstWith(r.Hops, StatusWarn)
+}
+
+func firstWith(hops []Hop, s Status) *Check {
+	var bare *Check
+	for hi := range hops {
+		for ci := range hops[hi].Checks {
+			c := &hops[hi].Checks[ci]
+			if c.Status != s {
+				continue
+			}
+			if c.Cause != "" {
 				return c
+			}
+			if bare == nil {
+				bare = c
 			}
 		}
 	}
-	for hi := range r.Hops {
-		for ci := range r.Hops[hi].Checks {
-			if c := &r.Hops[hi].Checks[ci]; c.Status == StatusWarn {
-				return c
-			}
-		}
-	}
-	return nil
+	return bare
 }
 
 // Exit codes, chosen so the tool can gate CI pipelines.

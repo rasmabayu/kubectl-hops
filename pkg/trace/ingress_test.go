@@ -184,7 +184,7 @@ func TestTraceIngress(t *testing.T) {
 			name:       "healthy path",
 			objects:    healthyCluster(ingress()),
 			opts:       Options{Host: "shop.example.com", Path: "/cart"},
-			wantStatus: StatusOK, wantBroken: -1, wantHops: 3,
+			wantStatus: StatusOK, wantBroken: -1, wantHops: 4,
 			wantChecks: []check{
 				{"Ingress", "ingressClass", StatusOK, "IngressClass nginx (controller k8s.io/ingress-nginx)"},
 				{"Ingress", "controller", StatusOK, "1/1 ingress-nginx pods ready in ingress-nginx"},
@@ -205,7 +205,7 @@ func TestTraceIngress(t *testing.T) {
 		{
 			name:       "IngressClass missing",
 			objects:    healthyCluster(ingress(withClass("nginx-internal"))),
-			wantStatus: StatusFail, wantBroken: 0, wantHops: 3,
+			wantStatus: StatusFail, wantBroken: 0, wantHops: 4,
 			wantChecks: []check{{"Ingress", "ingressClass", StatusFail, `"nginx-internal" does not exist`}},
 			wantCause:  "No controller watches this class",
 		},
@@ -213,7 +213,7 @@ func TestTraceIngress(t *testing.T) {
 			name: "controller not running",
 			objects: append([]runtime.Object{ingress(), ingressClass("nginx", "k8s.io/ingress-nginx", false)},
 				healthyBackend()...),
-			wantStatus: StatusWarn, wantBroken: -1, wantHops: 3,
+			wantStatus: StatusWarn, wantBroken: -1, wantHops: 4,
 			wantChecks: []check{{"Ingress", "controller", StatusWarn, "no ingress-nginx pods found with the standard labels"}},
 			wantCause:  "non-standard labels",
 		},
@@ -223,7 +223,7 @@ func TestTraceIngress(t *testing.T) {
 				ingress(withClass("kong")), ingressClass("kong", "ingress-controllers.konghq.com/kong", false),
 				labeledPod("kong-kong-1", "kong", map[string]string{"app.kubernetes.io/name": "kong"}, true),
 			}, healthyBackend()...),
-			wantStatus: StatusOK, wantBroken: -1, wantHops: 3,
+			wantStatus: StatusOK, wantBroken: -1, wantHops: 4,
 			wantChecks: []check{{"Ingress", "controller", StatusOK, "1/1 Kong pods ready in kong"}},
 		},
 		{
@@ -232,7 +232,7 @@ func TestTraceIngress(t *testing.T) {
 				ingress(withClass("kong")), ingressClass("kong", "ingress-controllers.konghq.com/kong", false),
 				labeledPod("ingress-kong-1", "kong", map[string]string{"app": "ingress-kong"}, false),
 			}, healthyBackend()...),
-			wantStatus: StatusFail, wantBroken: 0, wantHops: 3,
+			wantStatus: StatusFail, wantBroken: 0, wantHops: 4,
 			wantChecks: []check{{"Ingress", "controller", StatusFail, "0/1 Kong pods ready"}},
 		},
 		{
@@ -241,7 +241,7 @@ func TestTraceIngress(t *testing.T) {
 				ingress(), ingressClass("nginx", "k8s.io/ingress-nginx", false),
 				controllerPod("c-1", false), controllerPod("c-2", false),
 			}, healthyBackend()...),
-			wantStatus: StatusFail, wantBroken: 0, wantHops: 3,
+			wantStatus: StatusFail, wantBroken: 0, wantHops: 4,
 			wantChecks: []check{{"Ingress", "controller", StatusFail, "0/2 ingress-nginx pods ready"}},
 			wantCause:  "controller itself is down",
 		},
@@ -251,13 +251,13 @@ func TestTraceIngress(t *testing.T) {
 				ingress(), ingressClass("nginx", "k8s.io/ingress-nginx", false),
 				controllerPod("c-1", true), controllerPod("c-2", false),
 			}, healthyBackend()...),
-			wantStatus: StatusWarn, wantBroken: -1, wantHops: 3,
+			wantStatus: StatusWarn, wantBroken: -1, wantHops: 4,
 			wantChecks: []check{{"Ingress", "controller", StatusWarn, "1/2"}},
 		},
 		{
 			name:       "no class and no default",
 			objects:    healthyCluster(ingress(withClass(""))),
-			wantStatus: StatusWarn, wantBroken: -1, wantHops: 3,
+			wantStatus: StatusWarn, wantBroken: -1, wantHops: 4,
 			wantChecks: []check{{"Ingress", "ingressClass", StatusWarn, "no IngressClass is marked default"}},
 		},
 		{
@@ -265,7 +265,7 @@ func TestTraceIngress(t *testing.T) {
 			objects: append([]runtime.Object{
 				ingress(withClass("")), ingressClass("nginx", "k8s.io/ingress-nginx", true), controllerPod("c-1", true),
 			}, healthyBackend()...),
-			wantStatus: StatusOK, wantBroken: -1, wantHops: 3,
+			wantStatus: StatusOK, wantBroken: -1, wantHops: 4,
 			wantChecks: []check{
 				{"Ingress", "ingressClass", StatusOK, "default IngressClass nginx applies"},
 				{"Ingress", "controller", StatusOK, "1/1"},
@@ -276,7 +276,7 @@ func TestTraceIngress(t *testing.T) {
 			objects: append([]runtime.Object{
 				ingress(withClass("")), ingressClass("a", "k8s.io/ingress-nginx", true), ingressClass("b", "k8s.io/ingress-nginx", true),
 			}, healthyBackend()...),
-			wantStatus: StatusWarn, wantBroken: -1, wantHops: 3,
+			wantStatus: StatusWarn, wantBroken: -1, wantHops: 4,
 			wantChecks: []check{{"Ingress", "ingressClass", StatusWarn, "2 IngressClasses are marked default"}},
 		},
 		{
@@ -287,7 +287,7 @@ func TestTraceIngress(t *testing.T) {
 				}),
 				controllerPod("c-1", true),
 			}, healthyBackend()...),
-			wantStatus: StatusOK, wantBroken: -1, wantHops: 3,
+			wantStatus: StatusOK, wantBroken: -1, wantHops: 4,
 			wantChecks: []check{
 				{"Ingress", "ingressClass", StatusInfo, "deprecated"},
 				{"Ingress", "controller", StatusOK, "1/1"},
@@ -298,7 +298,7 @@ func TestTraceIngress(t *testing.T) {
 			objects: append([]runtime.Object{
 				ingress(withClass("gce")), ingressClass("gce", "k8s.io/ingress-gce", false),
 			}, healthyBackend()...),
-			wantStatus: StatusOK, wantBroken: -1, wantHops: 3,
+			wantStatus: StatusOK, wantBroken: -1, wantHops: 4,
 			wantChecks: []check{{"Ingress", "controller", StatusInfo, "managed load balancer"}},
 		},
 		{
@@ -306,7 +306,7 @@ func TestTraceIngress(t *testing.T) {
 			objects: append([]runtime.Object{
 				ingress(withClass("x")), ingressClass("x", "example.com/custom", false),
 			}, healthyBackend()...),
-			wantStatus: StatusOK, wantBroken: -1, wantHops: 3,
+			wantStatus: StatusOK, wantBroken: -1, wantHops: 4,
 			wantChecks: []check{{"Ingress", "controller", StatusInfo, "pods not checked"}},
 		},
 		{
@@ -314,7 +314,7 @@ func TestTraceIngress(t *testing.T) {
 			objects: healthyCluster(ingress(func(i *networkingv1.Ingress) {
 				i.Status = networkingv1.IngressStatus{}
 			})),
-			wantStatus: StatusWarn, wantBroken: -1, wantHops: 3,
+			wantStatus: StatusWarn, wantBroken: -1, wantHops: 4,
 			wantChecks: []check{{"Ingress", "address", StatusWarn, "no controller has admitted"}},
 		},
 		{
@@ -324,7 +324,7 @@ func TestTraceIngress(t *testing.T) {
 				rule("*.example.com", ingressPath("/", prefix, "web", httpPort)),
 			))),
 			opts:       Options{Host: "api.example.com"},
-			wantStatus: StatusOK, wantBroken: -1, wantHops: 3,
+			wantStatus: StatusOK, wantBroken: -1, wantHops: 4,
 			wantChecks: []check{{"Ingress", "rule", StatusOK, "→ svc/web:http"}},
 		},
 		{
@@ -344,7 +344,7 @@ func TestTraceIngress(t *testing.T) {
 				ingressPath("/api", prefix, "web", httpPort),
 			)))),
 			opts:       Options{Host: "shop.example.com", Path: "/api/v1/items"},
-			wantStatus: StatusOK, wantBroken: -1, wantHops: 3,
+			wantStatus: StatusOK, wantBroken: -1, wantHops: 4,
 			wantChecks: []check{{"Ingress", "rule", StatusOK, "matches path /api (Prefix) → svc/web:http"}},
 		},
 		{
@@ -354,7 +354,7 @@ func TestTraceIngress(t *testing.T) {
 				ingressPath("/api", prefix, "other", httpPort),
 			)))),
 			opts:       Options{Host: "shop.example.com", Path: "/apix"},
-			wantStatus: StatusOK, wantBroken: -1, wantHops: 3,
+			wantStatus: StatusOK, wantBroken: -1, wantHops: 4,
 			wantChecks: []check{{"Ingress", "rule", StatusOK, "matches path / (Prefix) → svc/web:http"}},
 		},
 		{
@@ -364,7 +364,7 @@ func TestTraceIngress(t *testing.T) {
 				ingressPath("/login", exact, "web", httpPort),
 			)))),
 			opts:       Options{Host: "shop.example.com", Path: "/login"},
-			wantStatus: StatusOK, wantBroken: -1, wantHops: 3,
+			wantStatus: StatusOK, wantBroken: -1, wantHops: 4,
 			wantChecks: []check{{"Ingress", "rule", StatusOK, "(Exact) → svc/web:http"}},
 		},
 		{
@@ -380,7 +380,7 @@ func TestTraceIngress(t *testing.T) {
 				i.Spec.DefaultBackend = &networkingv1.IngressBackend{Service: &networkingv1.IngressServiceBackend{Name: "web", Port: httpPort}}
 			})),
 			opts:       Options{Host: "other.example.com"},
-			wantStatus: StatusOK, wantBroken: -1, wantHops: 3,
+			wantStatus: StatusOK, wantBroken: -1, wantHops: 4,
 			wantChecks: []check{{"Ingress", "rule", StatusInfo, "spec.defaultBackend → svc/web:http"}},
 		},
 		{
@@ -389,7 +389,7 @@ func TestTraceIngress(t *testing.T) {
 				rule("shop.example.com", ingressPath("/", prefix, "web", httpPort)),
 				rule("admin.example.com", ingressPath("/", prefix, "other", httpPort)),
 			))),
-			wantStatus: StatusOK, wantBroken: -1, wantHops: 3,
+			wantStatus: StatusOK, wantBroken: -1, wantHops: 4,
 			wantChecks: []check{
 				{"Ingress", "host", StatusInfo, "serves 2 hosts; tracing shop.example.com"},
 				{"Ingress", "rule", StatusOK, "svc/web"},
@@ -409,7 +409,7 @@ func TestTraceIngress(t *testing.T) {
 			objects: healthyCluster(ingress(withRules(rule("shop.example.com",
 				ingressPath("/", prefix, "web", networkingv1.ServiceBackendPort{Number: 8080}),
 			)))),
-			wantStatus: StatusFail, wantBroken: 0, wantHops: 3,
+			wantStatus: StatusFail, wantBroken: 0, wantHops: 4,
 			wantChecks: []check{{"Ingress", "backend", StatusFail, "Service web has no port 8080 service ports: http=80"}},
 			wantCause:  "not the targetPort",
 		},
@@ -418,7 +418,7 @@ func TestTraceIngress(t *testing.T) {
 			objects: healthyCluster(ingress(withRules(rule("shop.example.com",
 				ingressPath("/", prefix, "web", networkingv1.ServiceBackendPort{Number: 80}),
 			)))),
-			wantStatus: StatusOK, wantBroken: -1, wantHops: 3,
+			wantStatus: StatusOK, wantBroken: -1, wantHops: 4,
 			wantChecks: []check{{"Ingress", "backend", StatusOK, "exposes port 80"}},
 		},
 		{
@@ -436,7 +436,7 @@ func TestTraceIngress(t *testing.T) {
 				ingress(), ingressClass("nginx", "k8s.io/ingress-nginx", false), controllerPod("c-1", true),
 				service("web"), pod("web-1", webLabels), slice("web-abc", "web", ep{"web-1", "10.0.0.1", false}),
 			},
-			wantStatus: StatusFail, wantBroken: 2, wantHops: 3,
+			wantStatus: StatusFail, wantBroken: 2, wantHops: 4,
 			wantChecks: []check{{"EndpointSlices", "endpoints", StatusFail, "0/1"}},
 			wantCause:  "readiness",
 		},
@@ -444,21 +444,21 @@ func TestTraceIngress(t *testing.T) {
 			name:       "TLS valid",
 			objects:    healthyCluster(ingress(withTLS("shop-tls", "shop.example.com")), tlsSecret(t, "shop-tls", []string{"shop.example.com"}, now.Add(-day), now.Add(60*day))),
 			opts:       Options{CheckTLS: true},
-			wantStatus: StatusOK, wantBroken: -1, wantHops: 3,
+			wantStatus: StatusOK, wantBroken: -1, wantHops: 4,
 			wantChecks: []check{{"Ingress", "tls", StatusOK, "valid until 2026-12-25 (60 days)"}},
 		},
 		{
 			name:       "TLS wildcard certificate",
 			objects:    healthyCluster(ingress(withTLS("wild", "*.example.com")), tlsSecret(t, "wild", []string{"*.example.com"}, now.Add(-day), now.Add(60*day))),
 			opts:       Options{CheckTLS: true},
-			wantStatus: StatusOK, wantBroken: -1, wantHops: 3,
+			wantStatus: StatusOK, wantBroken: -1, wantHops: 4,
 			wantChecks: []check{{"Ingress", "tls", StatusOK, "certificate for shop.example.com"}},
 		},
 		{
 			name:       "TLS expired",
 			objects:    healthyCluster(ingress(withTLS("shop-tls", "shop.example.com")), tlsSecret(t, "shop-tls", []string{"shop.example.com"}, now.Add(-90*day), now.Add(-day))),
 			opts:       Options{CheckTLS: true},
-			wantStatus: StatusFail, wantBroken: 0, wantHops: 3,
+			wantStatus: StatusFail, wantBroken: 0, wantHops: 4,
 			wantChecks: []check{{"Ingress", "tls", StatusFail, "expired on 2026-10-25"}},
 			wantCause:  "expired",
 		},
@@ -466,14 +466,14 @@ func TestTraceIngress(t *testing.T) {
 			name:       "TLS not yet valid",
 			objects:    healthyCluster(ingress(withTLS("shop-tls", "shop.example.com")), tlsSecret(t, "shop-tls", []string{"shop.example.com"}, now.Add(day), now.Add(90*day))),
 			opts:       Options{CheckTLS: true},
-			wantStatus: StatusFail, wantBroken: 0, wantHops: 3,
+			wantStatus: StatusFail, wantBroken: 0, wantHops: 4,
 			wantChecks: []check{{"Ingress", "tls", StatusFail, "not valid until"}},
 		},
 		{
 			name:       "TLS SAN mismatch",
 			objects:    healthyCluster(ingress(withTLS("shop-tls", "shop.example.com")), tlsSecret(t, "shop-tls", []string{"www.example.com"}, now.Add(-day), now.Add(60*day))),
 			opts:       Options{CheckTLS: true},
-			wantStatus: StatusFail, wantBroken: 0, wantHops: 3,
+			wantStatus: StatusFail, wantBroken: 0, wantHops: 4,
 			wantChecks: []check{{"Ingress", "tls", StatusFail, "does not cover shop.example.com SANs: www.example.com"}},
 			wantCause:  "name mismatch",
 		},
@@ -481,14 +481,14 @@ func TestTraceIngress(t *testing.T) {
 			name:       "TLS expiring soon",
 			objects:    healthyCluster(ingress(withTLS("shop-tls", "shop.example.com")), tlsSecret(t, "shop-tls", []string{"shop.example.com"}, now.Add(-day), now.Add(5*day))),
 			opts:       Options{CheckTLS: true},
-			wantStatus: StatusWarn, wantBroken: -1, wantHops: 3,
+			wantStatus: StatusWarn, wantBroken: -1, wantHops: 4,
 			wantChecks: []check{{"Ingress", "tls", StatusWarn, "expires in 5 day(s)"}},
 		},
 		{
 			name:       "TLS secret missing",
 			objects:    healthyCluster(ingress(withTLS("shop-tls", "shop.example.com"))),
 			opts:       Options{CheckTLS: true},
-			wantStatus: StatusFail, wantBroken: 0, wantHops: 3,
+			wantStatus: StatusFail, wantBroken: 0, wantHops: 4,
 			wantChecks: []check{{"Ingress", "tls", StatusFail, `TLS secret "shop-tls" not found`}},
 			wantCause:  "cert-manager",
 		},
@@ -499,20 +499,20 @@ func TestTraceIngress(t *testing.T) {
 				Data:       map[string][]byte{corev1.TLSCertKey: []byte("not pem")},
 			}),
 			opts:       Options{CheckTLS: true},
-			wantStatus: StatusFail, wantBroken: 0, wantHops: 3,
+			wantStatus: StatusFail, wantBroken: 0, wantHops: 4,
 			wantChecks: []check{{"Ingress", "tls", StatusFail, "holds no PEM certificate"}},
 		},
 		{
 			name:       "TLS entry missing for host",
 			objects:    healthyCluster(ingress(withTLS("other-tls", "other.example.com"))),
 			opts:       Options{CheckTLS: true},
-			wantStatus: StatusWarn, wantBroken: -1, wantHops: 3,
+			wantStatus: StatusWarn, wantBroken: -1, wantHops: 4,
 			wantChecks: []check{{"Ingress", "tls", StatusWarn, "no TLS entry covers shop.example.com"}},
 		},
 		{
 			name:       "TLS ignored without --check-tls",
 			objects:    healthyCluster(ingress(withTLS("shop-tls", "shop.example.com"))),
-			wantStatus: StatusOK, wantBroken: -1, wantHops: 3,
+			wantStatus: StatusOK, wantBroken: -1, wantHops: 4,
 		},
 	}
 

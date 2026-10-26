@@ -44,7 +44,7 @@ func (t *Tracer) Trace(ctx context.Context, target Target) (*Report, error) {
 	case KindService:
 		hops, err = t.traceService(ctx, target.Namespace, target.Name)
 	case KindDeployment:
-		return nil, fmt.Errorf("tracing from %s is not implemented yet; start from svc/<name> or ingress/<name> for now", target.Kind)
+		hops, err = t.traceDeployment(ctx, target.Namespace, target.Name)
 	default:
 		return nil, fmt.Errorf("unsupported kind %q", target.Kind)
 	}

@@ -12,6 +12,12 @@ linters:
       rules:
         - name: exported
           disabled: true
+  exclusions:
+    rules:
+      # Test fixtures keep parameters for readability even when every call passes the same value.
+      - path: _test\.go
+        linters:
+          - unparam
 formatters:
   enable:
     - gofmt

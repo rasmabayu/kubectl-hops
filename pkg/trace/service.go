@@ -14,7 +14,8 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 )
 
-// traceService returns the Service hop followed by its EndpointSlices hop.
+// traceService returns the Service hop followed by its EndpointSlices hop and,
+// when the selector matches pods, a Pods hop.
 func (t *Tracer) traceService(ctx context.Context, ns, name string) ([]Hop, error) {
 	svcHop := Hop{Kind: "Service", Namespace: ns, Name: name}
 
@@ -62,7 +63,38 @@ func (t *Tracer) traceService(ctx context.Context, ns, name string) ([]Hop, erro
 	if err != nil {
 		return nil, err
 	}
-	return []Hop{svcHop, epHop}, nil
+	if len(pods) == 0 {
+		return []Hop{svcHop, epHop}, nil
+	}
+
+	podsHop, err := t.podsHop(ctx, ns, name, pods)
+	if err != nil {
+		return nil, err
+	}
+	adoptPodCause(&epHop, "endpoints", &podsHop)
+	return []Hop{svcHop, epHop, podsHop}, nil
+}
+
+// adoptPodCause replaces the generic cause of the named failing or warning
+// check in hop with the specific diagnosis of the first unhealthy pod, since
+// that is what the user needs to act on.
+func adoptPodCause(hop *Hop, check string, podsHop *Hop) {
+	var target *Check
+	for i := range hop.Checks {
+		if c := &hop.Checks[i]; c.Name == check && (c.Status == StatusWarn || c.Status == StatusFail) {
+			target = c
+		}
+	}
+	if target == nil {
+		return
+	}
+	for _, c := range podsHop.Checks {
+		if strings.HasPrefix(c.Name, "pod ") && (c.Status == StatusWarn || c.Status == StatusFail) && c.Cause != "" {
+			target.Cause = c.Cause
+			target.Try = c.Try
+			return
+		}
+	}
 }
 
 func describeService(svc *corev1.Service) string {

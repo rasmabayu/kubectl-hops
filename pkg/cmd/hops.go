@@ -22,6 +22,9 @@ const example = `  # Why does my Service not answer?
   # Follow the Ingress rule for a host and path, including its TLS certificate
   kubectl hops ingress/shop -n shop --host shop.example.com --path /api --check-tls
 
+  # Find the Services in front of a Deployment and explain its unhealthy pods
+  kubectl hops deploy/api -n shop
+
   # Machine-readable output for CI; exit code 1 = broken, 2 = warnings
   kubectl hops svc/web -n shop -o json`
 
