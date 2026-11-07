@@ -4,7 +4,7 @@
 
 `kubectl hops` follows **Ingress → Service → EndpointSlices → Pods** (plus NetworkPolicy), runs read-only checks on every hop and points at the first one that is broken, with a plain-language *likely cause* and concrete commands to try next.
 
-> **Status: early development (milestone M2 done).** Tracing from `ingress/<name>`, `svc/<name>` and `deploy/<name>` works today, down to a diagnosis of each pod. NetworkPolicy checks and end-to-end tests are next on the [roadmap](#roadmap).
+> **Status: early development (M2 done, M3 in progress).** Tracing from `ingress/<name>`, `svc/<name>` and `deploy/<name>` works today, down to a diagnosis of each pod, including static NetworkPolicy checks. End-to-end tests on kind are next on the [roadmap](#roadmap).
 
 ```text
 $ kubectl hops ingress/shop -n shop --host shop.example.com --path /api/orders --check-tls
@@ -67,6 +67,46 @@ Try:
   kubectl logs api-7c9f-q8m -n shop -c app --previous
   kubectl describe pod api-7c9f-q8m -n shop
 ```
+
+When NetworkPolicies isolate the backend pods, a trace from an Ingress checks them against the ingress controller's own pods and namespace, on the port the Ingress uses. A default-deny policy without a companion rule for the controller is caught even though every object looks healthy:
+
+```text
+$ kubectl hops ingress/shop -n shop --host shop.example.com
+Tracing Ingress shop/shop
+
+✔ Ingress shop/shop
+├─ ✔ exists: 1 rule(s), 0 TLS section(s)
+├─ ✔ ingressClass: IngressClass nginx (controller k8s.io/ingress-nginx)
+├─ ✔ controller: 1/1 ingress-nginx pods ready in ingress-nginx
+├─ ✔ address: 203.0.113.10
+├─ ✔ rule: shop.example.com/ matches path / (Prefix) → svc/web:http
+└─ ✔ backend: Service web exposes port http
+  ↓
+✔ Service shop/web
+├─ ✔ exists: ClusterIP, ports 80→http
+├─ ✔ selector: selector app=web matches 1 pod(s)
+└─ ✔ targetPort http: port 80 → targetPort http/TCP found on 1/1 pod(s)
+  ↓
+✔ EndpointSlices shop/web
+└─ ✔ endpoints: 1/1 endpoints ready
+  ↓
+✖ NetworkPolicy shop/default-deny  ← first broken hop
+├─ ℹ policies: 1 policy isolates the backing pods for ingress
+│     default-deny
+└─ ✖ port 80: no rule admits ingress-nginx pods (namespace ingress-nginx) on 8080/TCP (http)
+  ↓
+✔ Pods shop/web
+└─ ✔ ready: 1/1 pod(s) ready
+
+Result: BROKEN at NetworkPolicy shop/default-deny
+Likely cause: A NetworkPolicy isolates the backend pods and none of its ingress rules admits ingress-nginx pods (namespace ingress-nginx) on 8080/TCP (http), so the controller's connections are dropped and it answers 502 or 504. Add a rule whose from matches the controller's namespace and pod labels. This only bites if the cluster's CNI enforces NetworkPolicy (Calico, Cilium, recent kindnet, ...).
+Try:
+  kubectl describe networkpolicy -n shop default-deny
+  kubectl get pods -n ingress-nginx --show-labels
+  kubectl get ns ingress-nginx --show-labels
+```
+
+NetworkPolicy is evaluated statically from the API objects, so the result assumes the CNI enforces it; the cause says so. `ipBlock` rules are reported but not decided, because whether they apply to pod IPs depends on the CNI.
 
 Starting from a Service skips the Ingress hop:
 
@@ -155,7 +195,8 @@ Designed to gate CI and smoke tests after a deploy:
 | | A broken pod is `✖` only when no pod is ready; otherwise traffic still flows and it is `⚠`. At most 5 pods are listed, failures first | ✅ M2 |
 | **Deployment** | Ready vs desired replicas, scaled to zero, rollout stuck (`ProgressDeadlineExceeded`) or in progress | ✅ M2 |
 | | Services whose selector matches the pod template (each one traced), Ingresses routing to them | ✅ M2 |
-| **NetworkPolicy** | Policies that select the target pods without an obvious rule allowing the ingress controller on that port → `⚠` | M3 |
+| **NetworkPolicy** | Shown only when ingress policies select the backend pods. From an Ingress: the controller pods, with their namespace labels, are matched against every rule on the backend port (pod and namespace selectors, named ports, port ranges) | ✅ M3 |
+| | No rule admits the controller (or, from `svc/` or `deploy/`, anyone) on the port → `✖`; only some pods blocked → `⚠`; only `ipBlock` rules or namespace labels that could not be read would admit it, or the port is open to selected sources only → `ℹ` with the sources listed | ✅ M3 |
 
 A note on `targetPort`: `containerPort` is informational, so a numeric `targetPort` only needs the process to listen. A probe aimed at that port proves something listens there, so it counts as a match. When pods declare ports and neither they nor a probe match, a typo is far more likely than an undeclared listener, so `hops` reports a failure and says so in the cause. When pods declare nothing and their probes use another port, it is a warning. A **named** `targetPort` that no container defines is always fatal, because the endpoint controller cannot resolve it.
 
@@ -175,13 +216,13 @@ flowchart LR
 - `pkg/render` knows nothing about Kubernetes; it renders a `Report`.
 - `pkg/cmd` wires flags, the client and exit codes.
 
-The plugin needs only `get`/`list` on the objects it walks (Deployments, Ingresses, IngressClasses, Services, EndpointSlices, Pods, Events, Nodes; Secrets only with `--check-tls`); it never writes to the cluster or sends traffic. Missing permissions for optional checks, such as listing controller pods cluster-wide, turn those checks into notes instead of errors.
+The plugin needs only `get`/`list` on the objects it walks (Deployments, Ingresses, IngressClasses, Services, EndpointSlices, Pods, Events, Nodes, NetworkPolicies, Namespaces; Secrets only with `--check-tls`); it never writes to the cluster or sends traffic. Missing permissions for optional checks, such as listing controller pods cluster-wide, turn those checks into notes instead of errors.
 
 ## Roadmap
 
 - **M1** — CLI skeleton, Service and EndpointSlices checks, text/JSON renderer, table-driven unit tests. ✅
 - **M2** — Ingress hop incl. `--check-tls`, probe-aware `targetPort` check, Pods hop, `deploy/<name>`. ✅
-- **M3** — Static NetworkPolicy check; end-to-end tests on kind using `examples/broken/*.yaml` (selector mismatch, wrong targetPort, failing readiness probe, missing backend, deny-all policy), which double as the demo; vhs GIF.
+- **M3** — Static NetworkPolicy check ✅; end-to-end tests on kind using `examples/broken/*.yaml` (selector mismatch, wrong targetPort, failing readiness probe, missing backend, deny-all policy), which double as the demo; vhs GIF.
 - **M4** — goreleaser multi-arch release and krew manifest.
 - **Later** — Gateway API `HTTPRoute`, `--watch`, Istio `VirtualService`.
 

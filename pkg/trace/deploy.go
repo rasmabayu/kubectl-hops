@@ -81,7 +81,7 @@ func (t *Tracer) traceDeployment(ctx context.Context, ns, name string) ([]Hop, e
 	// would repeat; show the Deployment's own pods once, at the end.
 	hops := []Hop{hop}
 	for _, s := range services {
-		svcHops, err := t.traceService(ctx, ns, s.Name)
+		svcHops, err := t.traceService(ctx, ns, s.Name, nil)
 		if err != nil {
 			return nil, err
 		}

@@ -78,7 +78,8 @@ func (t *Tracer) traceIngress(ctx context.Context, ns, name string) ([]Hop, erro
 	}
 	hop.Add(Check{Name: "exists", Status: StatusOK, Message: fmt.Sprintf("%d rule(s), %d TLS section(s)", len(ing.Spec.Rules), len(ing.Spec.TLS))})
 
-	if err := t.checkIngressClass(ctx, ing, &hop); err != nil {
+	src, err := t.checkIngressClass(ctx, ing, &hop)
+	if err != nil {
 		return nil, err
 	}
 	checkIngressAddress(ing, &hop)
@@ -120,8 +121,11 @@ func (t *Tracer) traceIngress(ctx context.Context, ns, name string) ([]Hop, erro
 		return nil, fmt.Errorf("get service %s/%s: %w", ns, svcName, err)
 	}
 	checkBackendPort(ing, svc, backend.Service.Port, &hop)
+	if src != nil {
+		src.port = &backend.Service.Port
+	}
 
-	svcHops, err := t.traceService(ctx, ns, svcName)
+	svcHops, err := t.traceService(ctx, ns, svcName, src)
 	if err != nil {
 		return nil, err
 	}
@@ -130,7 +134,7 @@ func (t *Tracer) traceIngress(ctx context.Context, ns, name string) ([]Hop, erro
 
 // checkIngressClass resolves the class of ing and checks that a controller is
 // there to serve it.
-func (t *Tracer) checkIngressClass(ctx context.Context, ing *networkingv1.Ingress, hop *Hop) error {
+func (t *Tracer) checkIngressClass(ctx context.Context, ing *networkingv1.Ingress, hop *Hop) (*trafficSource, error) {
 	tryClasses := "kubectl get ingressclass"
 
 	if ing.Spec.IngressClassName != nil && *ing.Spec.IngressClassName != "" {
@@ -145,12 +149,12 @@ func (t *Tracer) checkIngressClass(ctx context.Context, ing *networkingv1.Ingres
 				Cause:   "No controller watches this class, so the Ingress is never programmed: the host does not resolve to it, or the controller answers 404.",
 				Try:     []string{tryClasses},
 			})
-			return nil
+			return nil, nil
 		case apierrors.IsForbidden(err):
 			hop.Add(Check{Name: "ingressClass", Status: StatusInfo, Message: fmt.Sprintf("class %q: not allowed to read IngressClasses, skipped", className)})
-			return nil
+			return nil, nil
 		case err != nil:
-			return fmt.Errorf("get ingressclass %s: %w", className, err)
+			return nil, fmt.Errorf("get ingressclass %s: %w", className, err)
 		}
 		hop.Add(Check{Name: "ingressClass", Status: StatusOK, Message: fmt.Sprintf("IngressClass %s (controller %s)", ic.Name, ic.Spec.Controller)})
 		return t.checkController(ctx, ic.Spec.Controller, hop)
@@ -170,16 +174,16 @@ func (t *Tracer) checkIngressClass(ctx context.Context, ing *networkingv1.Ingres
 		if err == nil {
 			return t.checkController(ctx, ic.Spec.Controller, hop)
 		}
-		return nil
+		return nil, nil
 	}
 
 	list, err := t.Client.NetworkingV1().IngressClasses().List(ctx, metav1.ListOptions{})
 	if apierrors.IsForbidden(err) {
 		hop.Add(Check{Name: "ingressClass", Status: StatusInfo, Message: "no class set and not allowed to list IngressClasses, skipped"})
-		return nil
+		return nil, nil
 	}
 	if err != nil {
-		return fmt.Errorf("list ingressclasses: %w", err)
+		return nil, fmt.Errorf("list ingressclasses: %w", err)
 	}
 	var defaults []networkingv1.IngressClass
 	for _, ic := range list.Items {
@@ -196,7 +200,7 @@ func (t *Tracer) checkIngressClass(ctx context.Context, ing *networkingv1.Ingres
 			Cause:   "Most controllers ignore an Ingress without a class unless one IngressClass is marked default, so this Ingress may never be served.",
 			Try:     []string{tryClasses},
 		})
-		return nil
+		return nil, nil
 	case 1:
 		hop.Add(Check{Name: "ingressClass", Status: StatusOK, Message: fmt.Sprintf("no class set; default IngressClass %s applies (controller %s)", defaults[0].Name, defaults[0].Spec.Controller)})
 		return t.checkController(ctx, defaults[0].Spec.Controller, hop)
@@ -208,23 +212,24 @@ func (t *Tracer) checkIngressClass(ctx context.Context, ing *networkingv1.Ingres
 			Cause:   "With several default classes it is ambiguous which controller serves this Ingress; set spec.ingressClassName.",
 			Try:     []string{tryClasses},
 		})
-		return nil
+		return nil, nil
 	}
 }
 
 // checkController looks for running pods of a known in-cluster controller.
-func (t *Tracer) checkController(ctx context.Context, controller string, hop *Hop) error {
+func (t *Tracer) checkController(ctx context.Context, controller string, hop *Hop) (*trafficSource, error) {
 	info, ok := knownControllers[controller]
 	switch {
 	case !ok:
 		hop.Add(Check{Name: "controller", Status: StatusInfo, Message: fmt.Sprintf("controller %q is not one kubectl-hops knows how to find; pods not checked", controller)})
-		return nil
+		return nil, nil
 	case info.managed:
 		hop.Add(Check{Name: "controller", Status: StatusInfo, Message: fmt.Sprintf("%s is a managed load balancer; no in-cluster controller pods to check", info.name)})
-		return nil
+		return nil, nil
 	}
 
 	var total, ready int
+	var found []corev1.Pod
 	namespaces := map[string]bool{}
 	var firstNS string
 	selector := info.selectors[0]
@@ -232,16 +237,17 @@ func (t *Tracer) checkController(ctx context.Context, controller string, hop *Ho
 		list, err := t.Client.CoreV1().Pods(metav1.NamespaceAll).List(ctx, metav1.ListOptions{LabelSelector: sel})
 		if apierrors.IsForbidden(err) {
 			hop.Add(Check{Name: "controller", Status: StatusInfo, Message: fmt.Sprintf("not allowed to list pods cluster-wide; %s pods not checked", info.name)})
-			return nil
+			return nil, nil
 		}
 		if err != nil {
-			return fmt.Errorf("list %s pods: %w", info.name, err)
+			return nil, fmt.Errorf("list %s pods: %w", info.name, err)
 		}
 		for _, p := range list.Items {
 			if p.Status.Phase == corev1.PodSucceeded || p.Status.Phase == corev1.PodFailed {
 				continue // admission jobs and the like
 			}
 			total++
+			found = append(found, p)
 			namespaces[p.Namespace] = true
 			if firstNS == "" {
 				firstNS = p.Namespace
@@ -286,7 +292,12 @@ func (t *Tracer) checkController(ctx context.Context, controller string, hop *Ho
 	default:
 		hop.Add(Check{Name: "controller", Status: StatusOK, Message: fmt.Sprintf("%d/%d %s pods ready in %s", ready, total, info.name, joinKeys(namespaces))})
 	}
-	return nil
+	if len(found) == 0 {
+		return nil, nil
+	}
+	// The controller pods are what connects to the backend, so NetworkPolicy
+	// is checked against them.
+	return &trafficSource{name: info.name, pods: found}, nil
 }
 
 func podReady(p *corev1.Pod) bool {

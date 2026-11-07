@@ -42,7 +42,7 @@ func (t *Tracer) Trace(ctx context.Context, target Target) (*Report, error) {
 	case KindIngress:
 		hops, err = t.traceIngress(ctx, target.Namespace, target.Name)
 	case KindService:
-		hops, err = t.traceService(ctx, target.Namespace, target.Name)
+		hops, err = t.traceService(ctx, target.Namespace, target.Name, nil)
 	case KindDeployment:
 		hops, err = t.traceDeployment(ctx, target.Namespace, target.Name)
 	default:

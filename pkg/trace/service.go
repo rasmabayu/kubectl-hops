@@ -15,8 +15,9 @@ import (
 )
 
 // traceService returns the Service hop followed by its EndpointSlices hop and,
-// when the selector matches pods, a Pods hop.
-func (t *Tracer) traceService(ctx context.Context, ns, name string) ([]Hop, error) {
+// when the selector matches pods, a NetworkPolicy hop (if policies isolate
+// them) and a Pods hop. src is the known client, if any.
+func (t *Tracer) traceService(ctx context.Context, ns, name string, src *trafficSource) ([]Hop, error) {
 	svcHop := Hop{Kind: "Service", Namespace: ns, Name: name}
 
 	svc, err := t.Client.CoreV1().Services(ns).Get(ctx, name, metav1.GetOptions{})
@@ -72,7 +73,16 @@ func (t *Tracer) traceService(ctx context.Context, ns, name string) ([]Hop, erro
 		return nil, err
 	}
 	adoptPodCause(&epHop, "endpoints", &podsHop)
-	return []Hop{svcHop, epHop, podsHop}, nil
+
+	hops := []Hop{svcHop, epHop}
+	npHop, ok, err := t.netpolHop(ctx, svc, pods, src)
+	if err != nil {
+		return nil, err
+	}
+	if ok {
+		hops = append(hops, npHop)
+	}
+	return append(hops, podsHop), nil
 }
 
 // adoptPodCause replaces the generic cause of the named failing or warning
